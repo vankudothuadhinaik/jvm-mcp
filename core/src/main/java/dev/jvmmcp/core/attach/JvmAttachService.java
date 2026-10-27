@@ -241,6 +241,11 @@ public class JvmAttachService {
         return command;
     }
 
+    private String firstToken(String command) {
+        int spaceIndex = command.indexOf(' ');
+        return spaceIndex == -1 ? command : command.substring(0, spaceIndex).trim();
+    }
+
     private String stripJarPath(String token) {
         int lastSlash = Math.max(token.lastIndexOf('/'), token.lastIndexOf('\\'));
         return lastSlash >= 0 ? token.substring(lastSlash + 1) : token;

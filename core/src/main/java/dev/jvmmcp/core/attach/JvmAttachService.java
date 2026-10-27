@@ -185,37 +185,59 @@ public class JvmAttachService {
             return "Unknown";
         }
 
-        String command = displayName.trim().replace("\"", "");
+        String command = displayName.trim();
 
-        // Handle "-jar " prefix explicitly
+        // Handle "-jar " explicitly; the JAR target may be quoted and contain spaces.
         if (command.toLowerCase().startsWith("-jar ")) {
             command = command.substring(5).trim();
         }
 
-        // Java 9+ modular launches name "module/Main" after -m, --module or --module=
+        // Java 9+ modular launches name "module/Main" after -m, --module or --module=.
         if (command.startsWith("-m ")) {
             command = command.substring(3).trim();
+            return firstToken(command);
         } else if (command.startsWith("--module ")) {
             command = command.substring(9).trim();
+            return firstToken(command);
         } else if (command.startsWith("--module=")) {
             command = command.substring(9).trim();
+            return firstToken(command);
         }
 
-        // 1. Is it a JAR execution? Look for ".jar" before arguments.
-        int jarIndex = command.toLowerCase().indexOf(".jar ");
-        if (jarIndex != -1) {
+        // A quoted launch target is one token even when its path contains spaces.
+        if (command.startsWith("\"")) {
+            int closingQuote = command.indexOf('"', 1);
+            if (closingQuote != -1) {
+                String quotedTarget = command.substring(1, closingQuote);
+                if (quotedTarget.toLowerCase().endsWith(".jar")) {
+                    return stripJarPath(quotedTarget);
+                }
+                return quotedTarget;
+            }
+        }
+
+        // Preserve legacy support for unquoted paths containing spaces, but only
+        // interpret ".jar" as the launch target when the command begins with a path.
+        int firstSpace = command.indexOf(' ');
+        String firstToken = firstSpace == -1 ? command : command.substring(0, firstSpace);
+        boolean firstTokenLooksLikePath =
+                firstToken.contains("/") || firstToken.contains("\\")
+                        || firstToken.matches("^[A-Za-z]:.*");
+        int jarIndex = command.toLowerCase().indexOf(".jar");
+        if (firstTokenLooksLikePath
+                && jarIndex >= 0
+                && (jarIndex + 4 == command.length()
+                        || Character.isWhitespace(command.charAt(jarIndex + 4)))) {
             return stripJarPath(command.substring(0, jarIndex + 4).trim());
         }
+
+        // For a class launch, arguments must never influence the main-class result.
+        if (firstSpace != -1) {
+            return firstToken;
+        }
         if (command.toLowerCase().endsWith(".jar")) {
-            return stripJarPath(command.trim());
+            return stripJarPath(command);
         }
-
-        // 2. It must be a main class. Main classes cannot contain spaces.
-        int spaceIndex = command.indexOf(' ');
-        if (spaceIndex != -1) {
-            return command.substring(0, spaceIndex).trim();
-        }
-
         return command;
     }
 

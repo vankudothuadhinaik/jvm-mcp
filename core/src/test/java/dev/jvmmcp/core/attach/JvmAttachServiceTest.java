@@ -359,10 +359,18 @@ class JvmAttachServiceTest {
                     .isEqualTo("demo.jar");
             assertThat(attachService.extractMainClass("-jar C:\\apps\\demo.jar"))
                     .isEqualTo("demo.jar");
+            assertThat(attachService.extractMainClass("-jar \"C:\\Program Files\\My App\\demo.jar\""))
+                    .isEqualTo("demo.jar");
+            assertThat(attachService.extractMainClass("\"C:\\Program Files\\My App\\demo.jar\" --x"))
+                    .isEqualTo("demo.jar");
             assertThat(
                             attachService.extractMainClass(
                                     "org.example.Application --spring.profiles.active=dev"))
                     .isEqualTo("org.example.Application");
+            assertThat(attachService.extractMainClass("com.acme.Main --lib=/opt/lib/a.jar x"))
+                    .isEqualTo("com.acme.Main");
+            assertThat(attachService.extractMainClass("com.acme.Main --config /etc/app.jar.conf"))
+                    .isEqualTo("com.acme.Main");
         }
 
         @Test

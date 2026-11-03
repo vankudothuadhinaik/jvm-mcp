@@ -12,6 +12,9 @@ import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -151,3 +154,46 @@ class McpTransportTest {
         assertThat(out.toString(StandardCharsets.UTF_8)).contains("\"result\":{}");
     }
 }
+
+
+    @Test
+    @DisplayName("applies backpressure when the maximum number of requests is in flight")
+    void testBoundsInFlightRequests() throws InterruptedException {
+        CountDownLatch started = new CountDownLatch(McpTransport.MAX_IN_FLIGHT_REQUESTS);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicInteger dispatched = new AtomicInteger();
+        McpDispatcher dispatcher =
+                new McpDispatcher(new ToolRegistry()) {
+                    @Override
+                    public Optional<Map<String, Object>> dispatch(String line) {
+                        int count = dispatched.incrementAndGet();
+                        started.countDown();
+                        try {
+                            release.await();
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        }
+                        return Optional.of(Map.of("jsonrpc", "2.0", "id", count, "result", Map.of()));
+                    }
+                };
+        McpTransport transport = new McpTransport(dispatcher);
+        String request = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n";
+        ByteArrayInputStream in =
+                new ByteArrayInputStream(
+                        request.repeat(McpTransport.MAX_IN_FLIGHT_REQUESTS + 1)
+                                .getBytes(StandardCharsets.UTF_8));
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        AtomicInteger exitCode = new AtomicInteger(-1);
+        Thread transportThread = new Thread(() -> exitCode.set(transport.start(in, out)));
+
+        transportThread.start();
+        assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(dispatched.get()).isEqualTo(McpTransport.MAX_IN_FLIGHT_REQUESTS);
+
+        release.countDown();
+        transportThread.join(5000);
+
+        assertThat(transportThread.isAlive()).isFalse();
+        assertThat(exitCode.get()).isZero();
+        assertThat(dispatched.get()).isEqualTo(McpTransport.MAX_IN_FLIGHT_REQUESTS + 1);
+    }

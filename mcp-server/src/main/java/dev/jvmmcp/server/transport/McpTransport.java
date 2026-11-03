@@ -11,6 +11,7 @@ import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.Semaphore;
 
 /**
  * Manages stdio transport, line reading loop, virtual-thread concurrency, synchronized response
@@ -46,12 +47,14 @@ public class McpTransport {
     }
 
     public static final int MAX_REQUEST_BYTES = 4 * 1024 * 1024; // 4MB
+    public static final int MAX_IN_FLIGHT_REQUESTS = 64;
 
     public int start(InputStream in, PrintStream out) {
         ExecutorService executor =
                 customExecutor != null
                         ? customExecutor
                         : Executors.newVirtualThreadPerTaskExecutor();
+        Semaphore inFlight = new Semaphore(MAX_IN_FLIGHT_REQUESTS);
         try {
             try (BoundedLineReader reader = new BoundedLineReader(in, MAX_REQUEST_BYTES)) {
                 while (true) {
@@ -75,20 +78,38 @@ public class McpTransport {
                     if (line.trim().isEmpty()) {
                         continue;
                     }
+                    try {
+                        // Apply backpressure before submitting another request. The virtual-thread
+                        // executor is intentionally lightweight, but must not be unbounded under
+                        // a fast or hostile stdio producer.
+                        inFlight.acquire();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return 1;
+                    }
+
                     final String requestLine = line;
-                    executor.submit(
-                            () -> {
-                                try {
-                                    Optional<Map<String, Object>> response =
-                                            dispatcher.dispatch(requestLine);
-                                    response.ifPresent(resp -> sendResponse(out, resp));
-                                } catch (Exception e) {
-                                    System.err.println(
-                                            "[jvm-mcp] Error processing request: "
-                                                    + e.getMessage());
-                                    sendResponse(out, dispatcher.formatParseError(e.getMessage()));
-                                }
-                            });
+                    try {
+                        executor.submit(
+                                () -> {
+                                    try {
+                                        Optional<Map<String, Object>> response =
+                                                dispatcher.dispatch(requestLine);
+                                        response.ifPresent(resp -> sendResponse(out, resp));
+                                    } catch (Exception e) {
+                                        System.err.println(
+                                                "[jvm-mcp] Error processing request: "
+                                                        + e.getMessage());
+                                        sendResponse(
+                                                out, dispatcher.formatParseError(e.getMessage()));
+                                    } finally {
+                                        inFlight.release();
+                                    }
+                                });
+                    } catch (RuntimeException e) {
+                        inFlight.release();
+                        throw e;
+                    }
                 }
             }
         } catch (Exception e) {
